@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { createInterface } from "node:readline";
 import { OpenAIEmbeddings } from "@langchain/openai";
 import { Document } from "@langchain/core/documents";
 import { VectorStore } from "@langchain/core/vectorstores";
@@ -81,15 +82,79 @@ function createStore(products) {
   return vectorStore.addDocuments(docs).then(() => vectorStore);
 }
 
+// Initialize store once at startup
+console.log("Initializing vector store...");
 const store = await createStore(products);
+console.log(`Vector store initialized with ${products.length} products.\n`);
 
 async function search(query, count = 3) {
-  const results = await store.similaritySearch(query, count);
-  return results.map((result) => ({
-    ...result.metadata,
-    content: result.pageContent,
+  const queryEmbedding = await store.embeddings.embedQuery(query);
+  const results = await store.similaritySearchVectorWithScore(
+    queryEmbedding,
+    count
+  );
+  // results is an array of [Document, score]
+  return results.map(([doc, score]) => ({
+    ...doc.metadata,
+    content: doc.pageContent,
+    score: score,
   }));
 }
 
-const results = await search("I want to buy a watch");
-console.log(results);
+// Create readline interface for interactive queries
+const rl = createInterface({
+  input: process.stdin,
+  output: process.stdout,
+});
+
+function askQuery() {
+  rl.question(
+    "Enter your search query (or 'exit'/'quit' to stop): ",
+    async (input) => {
+      const query = input.trim();
+
+      // Check for exit commands
+      if (
+        !query ||
+        query.toLowerCase() === "exit" ||
+        query.toLowerCase() === "quit"
+      ) {
+        console.log("Exiting...");
+        rl.close();
+        process.exit(0);
+        return;
+      }
+
+      try {
+        console.log(`\nSearching for: "${query}"\n`);
+        const results = await search(query);
+
+        if (results.length === 0) {
+          console.log("No results found.\n");
+        } else {
+          results.forEach((result, index) => {
+            console.log(`${index + 1}. Score: ${result.score.toFixed(4)}`);
+            console.log(`   Content: ${result.content}`);
+            console.log(`   Source ID: ${result.source}\n`);
+          });
+        }
+      } catch (error) {
+        console.error("Error during search:", error.message);
+        console.log();
+      }
+
+      // Continue the loop
+      askQuery();
+    }
+  );
+}
+
+// Handle Ctrl+C gracefully
+rl.on("SIGINT", () => {
+  console.log("\n\nExiting...");
+  rl.close();
+  process.exit(0);
+});
+
+// Start the interactive loop
+askQuery();
